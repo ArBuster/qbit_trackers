@@ -23,6 +23,7 @@ CHECK_RETRY = 3
 CHECK_TIMEOUT = 15
 # 每秒发送请求数量
 REQUESTS_PER_SECOND = 10
+SLEEP_TIME = 1 / REQUESTS_PER_SECOND
 # 最大并发连接数量
 CONCURRENCY = 100
 
@@ -93,17 +94,16 @@ def filter_protocol(trackers_list:list[str]) -> (list[str], list[str]):
 async def check_trackers(http_trackers:list[str], udp_trackers:list[str]) -> list[str]:
     logger.info("check trackers...")
     semaphore = asyncio.Semaphore(CONCURRENCY)
-    sleep_time = 1 / REQUESTS_PER_SECOND
     http_timeout = aiohttp.ClientTimeout(sock_connect=CHECK_TIMEOUT, total=CHECK_TIMEOUT*2)
 
     tasks = list()
     for url in http_trackers:
         tasks.append(asyncio.create_task(check_http_tracker(url, semaphore, http_timeout)))
-        await asyncio.sleep(sleep_time)
+        await asyncio.sleep(SLEEP_TIME)
 
     for url in udp_trackers:
         tasks.append(asyncio.create_task(check_udp_tracker(url, semaphore)))
-        await asyncio.sleep(sleep_time)
+        await asyncio.sleep(SLEEP_TIME)
 
     results = await asyncio.gather(*tasks)
 
@@ -216,6 +216,7 @@ def get_torrents_trackers(hash_list:list[str]) -> dict[str:list]:
             logger.warning(f"发生HTTP错误: {url} {e.code} {e.reason}")
         except urllib.error.URLError as e:
             logger.warning(f"发生URL错误: {url} {e.reason}")
+        sleep(SLEEP_TIME)
 
     return torrents_trackers
 
@@ -274,6 +275,7 @@ def update_torrents_trackers(trackers_update:dict[str:dict]):
                 logger.warning(f"{hash}: remove trackers 发生HTTP错误: {e.code} {e.reason}")
             except urllib.error.URLError as e:
                 logger.warning(f"{hash}: remove trackers 发生URL错误: {e.reason}")
+            sleep(SLEEP_TIME)
 
         if v["new"]:
             payload = {
@@ -290,6 +292,7 @@ def update_torrents_trackers(trackers_update:dict[str:dict]):
                 logger.warning(f"{hash}: add trackers 发生HTTP错误: {e.code} {e.reason}")
             except urllib.error.URLError as e:
                 logger.warning(f"{hash}: add trackers 发生URL错误: {e.reason}")
+            sleep(SLEEP_TIME)
 
 
 if __name__ == "__main__":
@@ -302,4 +305,5 @@ if __name__ == "__main__":
     torrents_trackers = get_torrents_trackers(hash_list)
     trackers_update = filter_torrents_trackers(torrents_trackers, set(trackers))
     update_torrents_trackers(trackers_update)
+
     logger.info("All done.")
