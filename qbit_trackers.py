@@ -53,7 +53,7 @@ def write_trackers_file(trackers_list:list[str]):
             f.write(os.linesep.join(trackers_list))
 
 
-def get_trackers_list() -> (list[str], list[str]):
+def get_trackers_list() -> (set[str], set[str]):
     logger.info("get trackers list...")
     trackers_list = read_trackers_file()
     if not trackers_list:
@@ -77,21 +77,32 @@ def get_trackers_list() -> (list[str], list[str]):
     return filter_protocol(trackers_list)
 
 
-def filter_protocol(trackers_list:list[str]) -> (list[str], list[str]):
-    http_trackers, udp_trackers = list(), list()
+def filter_protocol(trackers_list:list[str]) -> (set[str], set[str]):
+    http_trackers, udp_trackers = set(), set()
 
     reg_http = re.compile(R"^https?://[^/].*", re.I)
     reg_udp = re.compile(R"^udp://[^/].*", re.I)
     for url in trackers_list:
         if reg_http.match(url):
-            http_trackers.append(url)
+            http_trackers.add(url)
         elif reg_udp.match(url):
-            udp_trackers.append(url)
+            udp_trackers.add(url)
 
-    return http_trackers, udp_trackers
+    return normalize_http_trackers(http_trackers), udp_trackers
 
 
-async def check_trackers(http_trackers:list[str], udp_trackers:list[str]) -> list[str]:
+def normalize_http_trackers(trackers:set[str]) -> set[str]:
+    del_trackers, add_trackers = set(), set()
+    for url in trackers:
+        p = urllib.parse.urlparse(url)
+        if (p.port == 80 and p.scheme == "http") or (p.port == 443 and p.scheme == "https"):
+            add_trackers.add(p._replace(netloc=p.hostname).geturl())
+            del_trackers.add(url)
+
+    return (trackers - del_trackers) | add_trackers
+
+
+async def check_trackers(http_trackers:set[str], udp_trackers:set[str]) -> set[str]:
     logger.info("check trackers...")
     semaphore = asyncio.Semaphore(CONCURRENCY)
     http_timeout = aiohttp.ClientTimeout(sock_connect=CHECK_TIMEOUT, total=CHECK_TIMEOUT*2)
@@ -107,7 +118,7 @@ async def check_trackers(http_trackers:list[str], udp_trackers:list[str]) -> lis
 
     results = await asyncio.gather(*tasks)
 
-    return [url for url in results if url]
+    return {url for url in results if url}
 
 
 async def check_http_tracker(url:str, semaphore:asyncio.Semaphore, http_timeout:aiohttp.ClientTimeout) -> str:
@@ -225,7 +236,7 @@ def filter_torrents_trackers(torrents_trackers:dict[str:list], new_trackers:set[
     trackers_filter = dict()
     working_all, not_working_all = set(), set()
 
-    reg_url = re.compile(R"^(udp|https?)://[^/].*", re.I)
+    exclude_url = {"** [DHT] **", "** [PeX] **", "** [LSD] **"}
     for key, trackers_list in torrents_trackers.items():
         not_working, working = set(), set()
         trackers_filter[key] = {
@@ -233,7 +244,7 @@ def filter_torrents_trackers(torrents_trackers:dict[str:list], new_trackers:set[
             "not_working": not_working
         }
         for t in trackers_list:
-            if reg_url.match(t["url"]):
+            if t["url"] not in exclude_url:
                 if t["status"] == 4:
                     not_working.add(t["url"])
                     not_working_all.add(t["url"])
@@ -243,12 +254,16 @@ def filter_torrents_trackers(torrents_trackers:dict[str:list], new_trackers:set[
                 else:
                     working.add(t["url"])
 
+    working_all = normalize_http_trackers(working_all)
+    not_working_all = normalize_http_trackers(not_working_all)
     not_working_all -= working_all
-    new_trackers |= working_all
     new_trackers -= not_working_all
+    new_trackers |= working_all
 
     for v in trackers_filter.values():
-        v["new"] = new_trackers - v["working"]
+        working = normalize_http_trackers(v["working"])
+        v["new"] = new_trackers - working
+        v["not_working"] |= (v["working"] - working)
         del v["working"]
 
     return trackers_filter
@@ -303,7 +318,7 @@ if __name__ == "__main__":
 
     hash_list = get_running_torrents_hash_list()
     torrents_trackers = get_torrents_trackers(hash_list)
-    trackers_update = filter_torrents_trackers(torrents_trackers, set(trackers))
+    trackers_update = filter_torrents_trackers(torrents_trackers, trackers)
     update_torrents_trackers(trackers_update)
 
     logger.info("All done.")
